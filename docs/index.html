@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="utf-8" />
+    <title>KML → GeoJSON / ZIP 変換</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="favicon.ico" sizes="any">
+    <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="favicon-192.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="favicon-180.png">
+    <!-- 見た目用：Tailwind（CDN） -->
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+
+<body class="min-h-screen bg-gray-50 text-gray-800 flex flex-col">
+    <header class="max-w-3xl mx-auto px-4 pt-10 pb-6">
+        <h1 class="text-2xl font-bold tracking-wide">KML → GeoJSON / ZIP 変換</h1>
+        <p class="text-sm text-gray-500 mt-1">
+            固定API <code>https://app.livlog.xyz/webapi/kml2geojson</code> にアップロードして変換します。
+        </p>
+    </header>
+
+    <main class="max-w-3xl mx-auto px-4 pb-16 flex-1">
+        <div class="bg-white rounded-2xl shadow p-6">
+            <form id="form" class="space-y-6">
+                <!-- ドロップゾーン -->
+                <div id="dropzone"
+                    class="border-2 border-dashed border-gray-300 rounded-xl p-8 flex flex-col items-center justify-center text-center cursor-pointer hover:border-blue-400 transition">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-10 w-10 mb-3" fill="none" viewBox="0 0 24 24"
+                        stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                            d="M3 15a4 4 0 004 4h10a4 4 0 100-8h-1.26A8 8 0 103 15z" />
+                    </svg>
+                    <p class="font-medium">KMLファイルをドラッグ＆ドロップ</p>
+                    <p class="text-sm text-gray-500 mt-1">または</p>
+                    <label
+                        class="mt-3 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm cursor-pointer hover:bg-blue-700">
+                        ファイルを選択
+                        <input id="file" name="file" type="file" accept=".kml" class="hidden" />
+                    </label>
+                    <p id="fileName" class="mt-2 text-sm text-gray-600"></p>
+                </div>
+
+                <!-- オプション -->
+                <div class="grid sm:grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-sm font-medium mb-1">出力形式</label>
+                        <div class="flex items-center gap-4">
+                            <label class="inline-flex items-center gap-2">
+                                <input type="radio" name="format" value="zip" checked class="text-blue-600" />
+                                <span class="text-sm">ZIP（レイヤごと）</span>
+                            </label>
+                            <label class="inline-flex items-center gap-2">
+                                <input type="radio" name="format" value="geojson" class="text-blue-600" />
+                                <span class="text-sm">単一GeoJSON（全件マージ）</span>
+                            </label>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium mb-1" for="basePrefix">ファイル名の接頭辞（任意）</label>
+                        <input id="basePrefix" type="text"
+                            class="w-full rounded-lg border-gray-300 focus:ring-2 focus:ring-blue-500"
+                            placeholder="例: niiza_suido" />
+                        <p class="text-xs text-gray-500 mt-1">ZIP内や出力ファイル名の先頭に使用（未指定なら自動）。</p>
+                    </div>
+                </div>
+
+                <!-- 操作ボタン -->
+                <div class="flex items-center gap-3">
+                    <button id="submitBtn" type="submit"
+                        class="px-5 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium disabled:opacity-50 hover:bg-blue-700">
+                        変換してダウンロード
+                    </button>
+                    <button id="resetBtn" type="button"
+                        class="px-4 py-2 rounded-lg bg-gray-100 text-sm hover:bg-gray-200">
+                        リセット
+                    </button>
+                </div>
+
+                <!-- 進捗表示 -->
+                <div id="progressWrap" class="hidden space-y-3">
+                    <div>
+                        <div class="flex justify-between text-xs text-gray-500 mb-1">
+                            <span>アップロード</span><span id="upPct">0%</span>
+                        </div>
+                        <progress id="upProgress" max="100" value="0" class="w-full h-2"></progress>
+                    </div>
+                    <div>
+                        <div class="flex justify-between text-xs text-gray-500 mb-1">
+                            <span>ダウンロード</span><span id="downPct">0%</span>
+                        </div>
+                        <progress id="downProgress" max="100" value="0" class="w-full h-2"></progress>
+                    </div>
+                </div>
+
+                <!-- メッセージ -->
+                <div id="msg" class="text-sm"></div>
+            </form>
+        </div>
+    </main>
+
+    <!-- ▼ コピーライト -->
+    <footer class="mt-auto w-full border-t border-gray-200 bg-white/70 backdrop-blur">
+        <div class="max-w-3xl mx-auto px-4 py-6 text-center text-xs text-gray-500">
+            © Copyright 2025 <a href="https://livlog.jp/" target="_blank">LivLog llc.</a> - All Rights Reserved
+        </div>
+    </footer>
+
+    <script>
+        // 固定API URL
+        const API_URL = 'https://app.livlog.xyz/webapi/kml2geojson';
+
+        const $ = (q) => document.querySelector(q);
+
+        const fileInput = $('#file');
+        const dropzone = $('#dropzone');
+        const fileNameLabel = $('#fileName');
+        const form = $('#form');
+        const submitBtn = $('#submitBtn');
+        const resetBtn = $('#resetBtn');
+        const basePrefixInp = $('#basePrefix');
+
+        const progressWrap = $('#progressWrap');
+        const upProgress = $('#upProgress');
+        const downProgress = $('#downProgress');
+        const upPct = $('#upPct');
+        const downPct = $('#downPct');
+        const msg = $('#msg');
+
+        let selectedFile = null;
+
+        fileInput.addEventListener('change', () => {
+            selectedFile = fileInput.files[0] ?? null;
+            fileNameLabel.textContent = selectedFile ? selectedFile.name : '';
+            toggleSubmit();
+        });
+
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(ev => {
+            dropzone.addEventListener(ev, (e) => { e.preventDefault(); e.stopPropagation(); }, false);
+        });
+        dropzone.addEventListener('dragover', () => dropzone.classList.add('border-blue-400'));
+        dropzone.addEventListener('dragleave', () => dropzone.classList.remove('border-blue-400'));
+        dropzone.addEventListener('drop', (e) => {
+            dropzone.classList.remove('border-blue-400');
+            const dt = e.dataTransfer;
+            if (dt && dt.files && dt.files[0]) {
+                const f = dt.files[0];
+                if (!f.name.toLowerCase().endsWith('.kml')) {
+                    toast('KMLファイル（.kml）を指定してください', 'error');
+                    return;
+                }
+                selectedFile = f;
+                fileNameLabel.textContent = f.name;
+                toggleSubmit();
+            }
+        });
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (!selectedFile) {
+                toast('ファイルを選択してください', 'error');
+                return;
+            }
+            const format = (new FormData(form).get('format')) || 'zip';
+            const basePrefix = basePrefixInp.value.trim();
+
+            const url = new URL(API_URL);
+            url.searchParams.set('format', format);
+            if (basePrefix) url.searchParams.set('basePrefix', basePrefix);
+
+            const fd = new FormData();
+            fd.append('file', selectedFile, selectedFile.name);
+
+            progressWrap.classList.remove('hidden');
+            setProgress(0, 0);
+            disableForm(true);
+            msg.textContent = '';
+            msg.className = 'text-sm';
+
+            try {
+                const blob = await uploadAndDownload(url.toString(), fd, (up) => setProgress(up, null), (down) => setProgress(null, down));
+                const filename = guessFilenameFromHeaders(lastResponseHeaders, format, basePrefix || 'output');
+                triggerDownload(blob, filename);
+                toast('変換が完了しました。', 'ok');
+            } catch (err) {
+                console.error(err);
+                toast(typeof err === 'string' ? err : '変換に失敗しました。サーバログを確認してください。', 'error');
+            } finally {
+                disableForm(false);
+                setProgress(0, 0);
+                progressWrap.classList.add('hidden');
+            }
+        });
+
+        resetBtn.addEventListener('click', () => {
+            selectedFile = null;
+            fileInput.value = '';
+            fileNameLabel.textContent = '';
+            basePrefixInp.value = '';
+            setProgress(0, 0);
+            progressWrap.classList.add('hidden');
+            msg.textContent = '';
+            msg.className = 'text-sm';
+            toggleSubmit();
+        });
+
+        function toggleSubmit() {
+            submitBtn.disabled = !selectedFile;
+        }
+
+        function disableForm(disabled) {
+            submitBtn.disabled = disabled || !selectedFile;
+            resetBtn.disabled = disabled;
+            fileInput.disabled = disabled;
+            basePrefixInp.disabled = disabled;
+            for (const el of document.querySelectorAll('input[name="format"]')) el.disabled = disabled;
+        }
+
+        function setProgress(upPctVal, downPctVal) {
+            if (typeof upPctVal === 'number') {
+                upProgress.value = upPctVal;
+                upPct.textContent = `${Math.floor(upPctVal)}%`;
+            }
+            if (typeof downPctVal === 'number') {
+                downProgress.value = downPctVal;
+                downPct.textContent = `${Math.floor(downPctVal)}%`;
+            }
+        }
+
+        function toast(text, type = 'ok') {
+            msg.textContent = text;
+            msg.className = 'text-sm mt-1 ' + (type === 'ok'
+                ? 'text-green-600'
+                : type === 'error' ? 'text-red-600' : 'text-gray-600');
+        }
+
+        function triggerDownload(blob, filename) {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+        }
+
+        function parseContentDispositionFilename(cd) {
+            if (!cd) return null;
+            const star = /filename\*\s*=\s*([^']*)''([^;]+)/i.exec(cd);
+            if (star && star[2]) { try { return decodeURIComponent(star[2]); } catch { } }
+            const quoted = /filename\s*=\s*"([^"]+)"/i.exec(cd);
+            if (quoted && quoted[1]) return quoted[1];
+            const bare = /filename\s*=\s*([^;]+)/i.exec(cd);
+            if (bare && bare[1]) return bare[1].trim();
+            return null;
+        }
+
+        let lastResponseHeaders = null;
+        function guessFilenameFromHeaders(headers, format, basePrefix) {
+            const cd = headers?.get?.('content-disposition');
+            const found = cd ? parseContentDispositionFilename(cd) : null;
+            if (found) return found;
+            const ext = format === 'geojson' ? '.geojson' : '.zip';
+            return basePrefix + ext;
+        }
+
+        function uploadAndDownload(url, formData, onUpload, onDownload) {
+            return new Promise((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
+                xhr.open('POST', url, true);
+                xhr.responseType = 'blob';
+
+                xhr.upload.onprogress = (e) => {
+                    if (e.lengthComputable && typeof onUpload === 'function') onUpload((e.loaded / e.total) * 100);
+                };
+                xhr.onprogress = (e) => {
+                    if (e.lengthComputable && typeof onDownload === 'function') onDownload((e.loaded / e.total) * 100);
+                };
+                xhr.onload = () => {
+                    lastResponseHeaders = { get: (name) => xhr.getResponseHeader(name) };
+                    if (xhr.status >= 200 && xhr.status < 300) resolve(xhr.response);
+                    else {
+                        const ct = xhr.getResponseHeader('Content-Type') || '';
+                        if (ct.includes('text') || ct.includes('json')) {
+                            const reader = new FileReader();
+                            reader.onload = () => reject(reader.result || `HTTP ${xhr.status}`);
+                            reader.onerror = () => reject(`HTTP ${xhr.status}`);
+                            reader.readAsText(xhr.response);
+                        } else reject(`HTTP ${xhr.status}`);
+                    }
+                };
+                xhr.onerror = () => reject('ネットワークエラーが発生しました。');
+                xhr.send(formData);
+            });
+        }
+    </script>
+</body>
+
+</html>
